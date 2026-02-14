@@ -12,6 +12,7 @@ from . import enums
 from . import utils
 from . import asset_db
 from . import props_txt_parser
+from . import fmodel_json_parser
 from . import game_profiles
 
 
@@ -159,7 +160,7 @@ class AssetImporter:
 
     def _import_material_to_library(self,
                                     material_name: str,
-                                    material_path_local: str,
+                                    material_path_local_no_ext: str,
                                     db: asset_db.AssetDB,
                                     umodel_export_dir: str,
                                     asset_library_dir: str,
@@ -168,12 +169,12 @@ class AssetImporter:
         """Import material to asset library from UModel output.
 
         :param material_name: Short name of material.
-        :param material_path_local: Path to material properties (.props.txt) in game format.
+        :param material_path_local_no_ext: Path to material properties file in game format without extension.
         :param db: Blender AssetDB.
         :param umodel_export_dir: UModel export directory.
         :param asset_library_dir: Asset library directory.
         :param game_profile: Game profile to use.
-        :raises RuntimeError: Raised when material properties (.props.txt) file was not found or failed to open.
+        :raises RuntimeError: Raised when material descriptor file was not found or failed to open.
         :raises NotImplementedError: Raised when requested game profile is not implemented or available.
         """
         game_profile_impl = game_profiles.GAME_HANDLERS.get(game_profile)
@@ -181,13 +182,22 @@ class AssetImporter:
         if game_profile_impl is None:
             raise NotImplementedError(f"Requested game profile {game_profile} is not implemented/available.")
 
-        material_path_local_no_ext = os.path.splitext(os.path.splitext(material_path_local)[0])[0]  # remove .props.txt
+        material_desc_path_no_ext = os.path.join(umodel_export_dir, material_path_local_no_ext)
 
-        # load texture infos, may throw OSError if file is not found.
+        # load texture infos from a supported descriptor format.
         # pylint: disable=unpacking-non-sequence
-        desc_ast, texture_infos, base_prop_overrides = props_txt_parser.parse_props_txt(os.path.join(umodel_export_dir,
-                                                                                        material_path_local),
-                                                                                        mode='MATERIAL')
+        if os.path.isfile(material_desc_path_no_ext + '.props.txt'):
+            desc_ast, texture_infos, base_prop_overrides = props_txt_parser.parse_props_txt(
+                material_desc_path_no_ext + '.props.txt',
+                mode='MATERIAL'
+            )
+        elif os.path.isfile(material_desc_path_no_ext + '.json'):
+            desc_ast, texture_infos, base_prop_overrides = fmodel_json_parser.parse_fmodel_json(
+                material_desc_path_no_ext + '.json',
+                mode='MATERIAL'
+            )
+        else:
+            raise FileNotFoundError(f'Could not find descriptor for material "{material_name}".')
         new_mat = bpy.data.materials.new(material_name)
         new_mat.asset_mark()
         new_mat.asset_data.catalog_id = db.uid_for_entry(material_path_local_no_ext)
@@ -409,10 +419,16 @@ class AssetImporter:
         # - read material descriptor file and identify associated materials
         try:
             # pylint: disable=unpacking-non-sequence
-            _, mat_descriptors_paths = props_txt_parser.parse_props_txt(asset_psk_path_noext + '.props.txt',
-                                                                        mode='MESH')
+            if os.path.isfile(asset_psk_path_noext + '.props.txt'):
+                _, mat_descriptors_paths = props_txt_parser.parse_props_txt(asset_psk_path_noext + '.props.txt',
+                                                                            mode='MESH')
+            elif os.path.isfile(asset_psk_path_noext + '.json'):
+                _, mat_descriptors_paths = fmodel_json_parser.parse_fmodel_json(asset_psk_path_noext + '.json',
+                                                                                 mode='MESH')
+            else:
+                raise OSError()
         except OSError:
-            self._warn_print(f"Warning: Loading material descriptor {asset_psk_path_noext + '.props.txt'} failed. "
+            self._warn_print(f"Warning: Loading material descriptor {asset_psk_path_noext + '.props.txt/.json'} failed. "
                              "Materials will not be avaialble for the imported object.")
         else:
             # attempt to obtain materials manually if descriptor is not available
@@ -422,10 +438,12 @@ class AssetImporter:
                 if os.path.isdir(mat_dir := os.path.join(os.path.dirname(psk_path), 'Materials')):
                     for root, _, files in os.walk(mat_dir):
                         for file in files:
-                            if not file.endswith('.props.txt'):
+                            if file.endswith('.props.txt'):
+                                file_abs = os.path.splitext(os.path.splitext(os.path.join(root, file))[0])[0]
+                            elif file.endswith('.json'):
+                                file_abs = os.path.splitext(os.path.join(root, file))[0]
+                            else:
                                 continue
-
-                            file_abs = os.path.splitext(os.path.splitext(os.path.join(root, file))[0])[0]
                             mat_name = os.path.basename(file_abs)
 
                             if mat_name not in mat_desc_order_map:
@@ -470,14 +488,13 @@ class AssetImporter:
                 material_path_local_no_ext = material_path_local_no_ext[1:] \
                     if material_path_local_no_ext.startswith(os.sep) else material_path_local_no_ext
 
-                material_path_local = material_path_local_no_ext + '.props.txt'
                 material_lib_path = os.path.join(asset_library_dir, material_path_local_no_ext) + '.blend'
 
                 try:
                     # add material to asset library if does not exist
                     if not os.path.isfile(material_lib_path):
                         self._import_material_to_library(material_name=material_name,
-                                                         material_path_local=material_path_local,
+                                                         material_path_local_no_ext=material_path_local_no_ext,
                                                          db=db,
                                                          umodel_export_dir=umodel_export_dir,
                                                          asset_library_dir=asset_library_dir,

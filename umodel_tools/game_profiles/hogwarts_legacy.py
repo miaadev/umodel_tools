@@ -7,6 +7,7 @@ import enum
 import typing as t
 import dataclasses
 
+
 import bpy
 import lark
 
@@ -93,7 +94,7 @@ TEXTURE_PARAM_NAME_TRS = {
 @dataclasses.dataclass
 class MaterialContext:
     bsdf_node: t.Optional[bpy.types.ShaderNodeBsdfPrincipled | bpy.types.ShaderNodeBsdfDiffuse]
-    desc_ast: lark.Tree
+    desc_ast: lark.Tree | dict[str, t.Any] | list[t.Any]
     use_pbr: bool
     msk_index: int = dataclasses.field(default=0)
     diffuse_connected: bool = dataclasses.field(default=False)
@@ -103,7 +104,9 @@ class MaterialContext:
 _state_buffer: dict[bpy.types.Material, MaterialContext] = {}
 
 
-def process_material(mat: bpy.types.Material, desc_ast: lark.Tree, use_pbr: bool):  # pylint: disable=unused-argument
+def process_material(mat: bpy.types.Material,
+                     desc_ast: lark.Tree | dict[str, t.Any] | list[t.Any],
+                     use_pbr: bool):  # pylint: disable=unused-argument
     _state_buffer[mat] = MaterialContext(bsdf_node=None, desc_ast=desc_ast, use_pbr=use_pbr)
 
 
@@ -255,7 +258,7 @@ def end_process_material(mat: bpy.types.Material):
 Color: t.TypeAlias = tuple[float, float, float]
 
 
-def _get_mask_colors(ast: lark.Tree) -> dict[str, Color]:
+def _get_mask_colors(ast: lark.Tree | dict[str, t.Any] | list[t.Any]) -> dict[str, Color]:
     """Get MSK colors from texture parameters.
 
     :param ast: .props.txt AST
@@ -263,6 +266,47 @@ def _get_mask_colors(ast: lark.Tree) -> dict[str, Color]:
     """
 
     colors = {}
+
+    if isinstance(ast, dict) or isinstance(ast, list):
+        exports = ast if isinstance(ast, list) else ast.get('Exports', [ast])
+
+        for export in exports:
+            if not isinstance(export, dict):
+                continue
+
+            vector_params = export.get('VectorParameterValues')
+            if not isinstance(vector_params, list):
+                continue
+
+            for vector_param in vector_params:
+                if not isinstance(vector_param, dict):
+                    continue
+
+                color_name = None
+                param_info = vector_param.get('ParameterInfo')
+                if isinstance(param_info, dict):
+                    color_name = param_info.get('Name')
+
+                if color_name is None:
+                    color_name = vector_param.get('ParameterName')
+
+                if not isinstance(color_name, str):
+                    continue
+
+                color_value = vector_param.get('ParameterValue')
+                if not isinstance(color_value, dict):
+                    continue
+
+                color = {
+                    'r': float(color_value.get('R', 0.0)),
+                    'g': float(color_value.get('G', 0.0)),
+                    'b': float(color_value.get('B', 0.0)),
+                    'a': float(color_value.get('A', 1.0))
+                }
+
+                colors[color_name.lower()] = (color['r'], color['g'], color['b'], color['a'])
+
+        return colors
 
     for child in ast.children:
         assert child.data == 'definition'
