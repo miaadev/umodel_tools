@@ -66,21 +66,14 @@ def _extract_object_path(value: t.Any) -> str | None:
     if not isinstance(value, dict):
         return None
 
-    for key in ('ObjectPath', 'ObjectName', 'AssetPathName', 'Value'):
+    for key in ('ObjectPath', 'ObjectName', 'AssetPathName'):
         if isinstance((obj_path := value.get(key)), str):
             return _normalize_object_path(obj_path)
-
-    if isinstance((name := value.get('Name')), str):
-        return _normalize_object_path(name)
 
     return None
 
 
 def _normalize_object_path(path: str) -> str:
-    # sometimes value can look like: "MaterialInstanceConstant /Game/Path/MI_Foo.MI_Foo"
-    if " /Game/" in path and not path.startswith('/'):
-        path = '/' + path.split(" /Game/", 1)[1]
-
     # strip class prefix: Class'/Game/Path.Asset'
     if "'" in path:
         path = path.split("'", 1)[1]
@@ -93,49 +86,11 @@ def _normalize_object_path(path: str) -> str:
     return path
 
 
-def _get_export_prop(export: dict[str, t.Any], key: str) -> t.Any:
-    value = export.get(key)
-    if value is not None:
-        return value
-
-    props = export.get('Properties')
-    if isinstance(props, dict):
-        return props.get(key)
-
-    return None
-
-
-def _get_param_name(param: dict[str, t.Any]) -> str | None:
-    param_info = param.get('ParameterInfo')
-    if isinstance(param_info, dict):
-        name = param_info.get('Name')
-        if isinstance(name, str):
-            return name
-
-        if isinstance(name, dict):
-            for key in ('Name', 'Value'):
-                nested = name.get(key)
-                if isinstance(nested, str):
-                    return nested
-
-    name = param.get('ParameterName')
-    if isinstance(name, str):
-        return name
-
-    if isinstance(name, dict):
-        for key in ('Name', 'Value'):
-            nested = name.get(key)
-            if isinstance(nested, str):
-                return nested
-
-    return None
-
-
 def _get_material_paths(data: t.Any) -> list[str]:
     material_paths = []
 
     for export in _iter_exports(data):
-        static_materials = _get_export_prop(export, 'StaticMaterials')
+        static_materials = export.get('StaticMaterials')
 
         if not isinstance(static_materials, list):
             continue
@@ -157,7 +112,7 @@ def _get_texture_infos(data: t.Any) -> dict[str, str]:
     texture_infos = {}
 
     for export in _iter_exports(data):
-        tex_param_values = _get_export_prop(export, 'TextureParameterValues')
+        tex_param_values = export.get('TextureParameterValues')
 
         if not isinstance(tex_param_values, list):
             continue
@@ -171,7 +126,13 @@ def _get_texture_infos(data: t.Any) -> dict[str, str]:
             if tex_path is None:
                 continue
 
-            param_name = _get_param_name(tex_param)
+            param_name = None
+            if isinstance((param_info := tex_param.get('ParameterInfo')), dict):
+                if isinstance((name := param_info.get('Name')), str):
+                    param_name = name
+
+            if param_name is None and isinstance((name := tex_param.get('ParameterName')), str):
+                param_name = name
 
             if param_name is None:
                 continue
@@ -183,24 +144,15 @@ def _get_texture_infos(data: t.Any) -> dict[str, str]:
 
 def _get_base_property_overrides(data: t.Any) -> dict[str, str | float | bool] | None:
     for export in _iter_exports(data):
-        base_props = _get_export_prop(export, 'BasePropertyOverrides')
+        base_props = export.get('BasePropertyOverrides')
 
         if not isinstance(base_props, dict):
             continue
 
         result: dict[str, str | float | bool] = {}
 
-        blend_mode = base_props.get('BlendMode')
-        if isinstance(blend_mode, str):
-            result['BlendMode'] = _normalize_blend_mode(blend_mode)
-        elif isinstance(blend_mode, int):
-            result['BlendMode'] = _normalize_blend_mode(str(blend_mode))
-        elif isinstance(blend_mode, dict):
-            for key in ('Value', 'Name'):
-                nested = blend_mode.get(key)
-                if isinstance(nested, (str, int)):
-                    result['BlendMode'] = _normalize_blend_mode(str(nested))
-                    break
+        if isinstance((blend_mode := base_props.get('BlendMode')), str):
+            result['BlendMode'] = blend_mode
 
         if isinstance((two_sided := base_props.get('TwoSided')), bool):
             result['TwoSided'] = two_sided
@@ -211,19 +163,3 @@ def _get_base_property_overrides(data: t.Any) -> dict[str, str | float | bool] |
         return result
 
     return None
-
-
-def _normalize_blend_mode(value: str) -> str:
-    value_map = {
-        '0': 'BLEND_Opaque (0)',
-        '1': 'BLEND_Masked (1)',
-        '2': 'BLEND_Translucent (2)',
-        '3': 'BLEND_Additive (3)',
-        '4': 'BLEND_Modulate (4)',
-        'BLEND_Opaque': 'BLEND_Opaque (0)',
-        'BLEND_Masked': 'BLEND_Masked (1)',
-        'BLEND_Translucent': 'BLEND_Translucent (2)',
-        'BLEND_Additive': 'BLEND_Additive (3)',
-        'BLEND_Modulate': 'BLEND_Modulate (4)'
-    }
-    return value_map.get(value, value)
